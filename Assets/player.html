@@ -1,0 +1,1196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Media Preview</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f5f7fa;
+    --surface-2: #edf1f7;
+    --border: #dfe5ee;
+    --text: #1b2230;
+    --muted: #657085;
+    --accent: #0078d4;
+    --accent-hover: #0066b8;
+    --accent-soft: rgba(0, 120, 212, 0.12);
+    --playing: #107c41;
+    --playing-soft: rgba(16, 124, 65, 0.14);
+    --wave-unplayed: #c7d2e2;
+    --wave-played: #0078d4;
+    --wave-hover: rgba(0, 120, 212, 0.35);
+    --video-bg: #0f141c;
+    --shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e1e;
+      --surface: #27292e;
+      --surface-2: #31343b;
+      --border: #3a3e47;
+      --text: #eef1f6;
+      --muted: #9aa4b5;
+      --accent: #4cc2ff;
+      --accent-hover: #6ad0ff;
+      --accent-soft: rgba(76, 194, 255, 0.16);
+      --playing: #3dd68c;
+      --playing-soft: rgba(61, 214, 140, 0.16);
+      --wave-unplayed: #4b5260;
+      --wave-played: #4cc2ff;
+      --wave-hover: rgba(76, 194, 255, 0.45);
+      --video-bg: #0b0d11;
+      --shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 16px;
+    gap: 12px;
+    overflow-y: auto;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .type-badge {
+    flex-shrink: 0;
+    padding: 2px 7px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .type-badge.video {
+    background: rgba(139, 92, 246, 0.16);
+    color: #8b5cf6;
+  }
+
+  .filename {
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .status-pill {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--surface-2);
+    color: var(--muted);
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .status-pill .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .status-pill.playing {
+    background: var(--playing-soft);
+    color: var(--playing);
+  }
+
+  .status-pill.playing .dot {
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.8); }
+  }
+
+  .meta-row {
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Stage */
+  .stage {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+    min-height: 110px;
+    justify-content: center;
+  }
+
+  .video-wrap {
+    position: relative;
+    width: 100%;
+    flex: 1;
+    min-height: 160px;
+    background: var(--video-bg);
+    border-radius: 10px;
+    overflow: hidden;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border: 1px solid var(--border);
+  }
+
+  .video-wrap.active {
+    display: flex;
+  }
+
+  video {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .video-overlay-play {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.18);
+    opacity: 1;
+    transition: opacity 0.16s ease;
+    pointer-events: none;
+  }
+
+  .video-wrap.is-playing .video-overlay-play {
+    opacity: 0;
+  }
+
+  .video-overlay-circle {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.58);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+
+  /* Waveform Card */
+  .wave-card {
+    position: relative;
+    width: 100%;
+    height: 168px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+    flex-shrink: 0;
+  }
+
+  .wave-card.compact {
+    height: 62px;
+  }
+
+  .wave-card.hidden {
+    display: none;
+  }
+
+  #waveCanvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .wave-overlay-msg {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 12px;
+    pointer-events: none;
+  }
+
+  .wave-hover-tip {
+    position: absolute;
+    top: 8px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(15, 23, 42, 0.82);
+    color: #fff;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    transform: translateX(-50%);
+    display: none;
+    white-space: nowrap;
+  }
+
+  /* Progress bar */
+  .progress-block {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+
+  .progress-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .time-label {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    min-width: 52px;
+  }
+
+  .time-label.right {
+    text-align: right;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    outline: none;
+    cursor: pointer;
+  }
+
+  #seekSlider {
+    flex: 1;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+    transition: transform 0.1s ease;
+  }
+
+  input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+  }
+
+  /* Controls */
+  .controls-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+
+  .controls-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 12px;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.06s;
+  }
+
+  button:hover {
+    background: var(--surface-2);
+  }
+
+  button:active {
+    transform: scale(0.98);
+  }
+
+  .btn-play {
+    min-width: 104px;
+    font-weight: 600;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    padding: 8px 16px;
+  }
+
+  .btn-play:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
+
+  .btn-play.playing {
+    background: var(--playing);
+    border-color: var(--playing);
+    color: #fff;
+  }
+
+  .btn-toggle.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .vol-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+  }
+
+  .btn-icon {
+    padding: 7px 9px;
+    min-width: 34px;
+  }
+
+  #volumeSlider {
+    width: 78px;
+  }
+
+  /* Speed row */
+  .speed-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .speed-label {
+    font-size: 12px;
+    color: var(--muted);
+    margin-right: 2px;
+  }
+
+  .speed-btn {
+    padding: 4px 9px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    border-radius: 6px;
+  }
+
+  .speed-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  /* Footer */
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 11.5px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  .autoplay-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+  }
+
+  .autoplay-label input {
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--accent);
+  }
+
+  .error-banner {
+    display: none;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(220, 38, 38, 0.12);
+    color: #dc2626;
+    font-size: 12.5px;
+    flex-shrink: 0;
+  }
+
+  .error-banner.visible {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <div class="title-row">
+      <span id="typeBadge" class="type-badge">AUDIO</span>
+      <div id="fileName" class="filename" title="">加载中...</div>
+      <div id="statusPill" class="status-pill"><span class="dot"></span><span id="statusText">就绪</span></div>
+    </div>
+    <div id="metaRow" class="meta-row">—</div>
+  </div>
+
+  <div id="errorBanner" class="error-banner"></div>
+
+  <div class="stage">
+    <div id="videoWrap" class="video-wrap">
+      <video id="videoEl" preload="metadata" playsinline></video>
+      <div class="video-overlay-play">
+        <div class="video-overlay-circle">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div id="waveCard" class="wave-card">
+      <canvas id="waveCanvas"></canvas>
+      <div id="waveMsg" class="wave-overlay-msg">等待加载波形...</div>
+      <div id="waveTip" class="wave-hover-tip">0:00.0</div>
+    </div>
+  </div>
+
+  <audio id="audioEl" preload="auto"></audio>
+
+  <div class="progress-block">
+    <div class="progress-row">
+      <span id="curTime" class="time-label">0:00.0</span>
+      <input id="seekSlider" type="range" min="0" max="1000" value="0" step="1" />
+      <span id="durTime" class="time-label right">0:00.0</span>
+    </div>
+  </div>
+
+  <div class="controls-card">
+    <div class="controls-main">
+      <button id="playBtn" class="btn-play" title="播放 / 暂停 (Space)">
+        <span id="playIcon">▶</span>
+        <span id="playLabel">播放</span>
+      </button>
+
+      <button id="loopBtn" class="btn-toggle" title="切换循环 (L)">
+        <span>🔁</span>
+        <span id="loopLabel">单次</span>
+      </button>
+
+      <div class="vol-group">
+        <button id="muteBtn" class="btn-icon" title="静音 (M)">🔊</button>
+        <input id="volumeSlider" type="range" min="0" max="1" step="0.01" value="0.85" title="音量" />
+      </div>
+    </div>
+
+    <div class="speed-row">
+      <span class="speed-label">倍速</span>
+      <button class="speed-btn" data-speed="0.5">0.5x</button>
+      <button class="speed-btn" data-speed="0.75">0.75x</button>
+      <button class="speed-btn active" data-speed="1">1.0x</button>
+      <button class="speed-btn" data-speed="1.25">1.25x</button>
+      <button class="speed-btn" data-speed="1.5">1.5x</button>
+      <button class="speed-btn" data-speed="2">2.0x</button>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>空格 播放/暂停 · 点击波形跳转 · ←/→ 步进</span>
+    <label class="autoplay-label" title="开启后选中文件将自动播放">
+      <input id="autoPlayChk" type="checkbox" />
+      <span>选中自动播放</span>
+    </label>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const typeBadge = $('typeBadge');
+  const fileNameEl = $('fileName');
+  const statusPill = $('statusPill');
+  const statusText = $('statusText');
+  const metaRow = $('metaRow');
+  const errorBanner = $('errorBanner');
+  const videoWrap = $('videoWrap');
+  const videoEl = $('videoEl');
+  const audioEl = $('audioEl');
+  const waveCard = $('waveCard');
+  const waveCanvas = $('waveCanvas');
+  const waveMsg = $('waveMsg');
+  const waveTip = $('waveTip');
+  const curTimeEl = $('curTime');
+  const durTimeEl = $('durTime');
+  const seekSlider = $('seekSlider');
+  const playBtn = $('playBtn');
+  const playIcon = $('playIcon');
+  const playLabel = $('playLabel');
+  const loopBtn = $('loopBtn');
+  const loopLabel = $('loopLabel');
+  const muteBtn = $('muteBtn');
+  const volumeSlider = $('volumeSlider');
+  const autoPlayChk = $('autoPlayChk');
+  const speedBtns = Array.from(document.querySelectorAll('.speed-btn'));
+
+  let settings = { loop: false, speed: 1.0, volume: 0.85, muted: false, autoPlay: false };
+  let activeMedia = audioEl;
+  let isVideoMode = false;
+  let loadSeq = 0;
+  let waveformPeaks = null;
+  let audioMetaExtra = '';
+  let currentFileInfo = null;
+  let hoverRatio = null;
+  let isDraggingWave = false;
+  let isSeekingSlider = false;
+  let rafId = null;
+  let audioCtx = null;
+
+  function postHost(msg) {
+    if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.postMessage(msg);
+    }
+  }
+
+  function saveSettings() {
+    postHost({ type: 'saveSettings', settings });
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  }
+
+  function formatTime(sec, total) {
+    if (!Number.isFinite(sec) || sec < 0) sec = 0;
+    const shortClip = Number.isFinite(total) && total > 0 && total < 60;
+    const mins = Math.floor(sec / 60);
+    const rem = sec % 60;
+    if (shortClip) {
+      const whole = Math.floor(rem);
+      const tenths = Math.floor((rem - whole) * 10);
+      return `${mins}:${String(whole).padStart(2, '0')}.${tenths}`;
+    }
+    const hrs = Math.floor(mins / 60);
+    const m = mins % 60;
+    const s = Math.floor(rem);
+    if (hrs > 0) {
+      return `${hrs}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function showError(msg) {
+    if (msg) {
+      errorBanner.textContent = msg;
+      errorBanner.classList.add('visible');
+    } else {
+      errorBanner.textContent = '';
+      errorBanner.classList.remove('visible');
+    }
+  }
+
+  function updateMetaRow() {
+    if (!currentFileInfo) {
+      metaRow.textContent = '—';
+      return;
+    }
+    const parts = [currentFileInfo.extension, formatBytes(currentFileInfo.fileSize)];
+    const dur = activeMedia.duration;
+    if (Number.isFinite(dur) && dur > 0) {
+      parts.push(formatTime(dur, dur));
+    }
+    if (isVideoMode && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+      parts.push(`${videoEl.videoWidth}×${videoEl.videoHeight}`);
+    }
+    if (audioMetaExtra) {
+      parts.push(audioMetaExtra);
+    }
+    metaRow.textContent = parts.filter(Boolean).join(' · ');
+  }
+
+  function applySettingsToMedia() {
+    for (const el of [audioEl, videoEl]) {
+      el.loop = !!settings.loop;
+      el.volume = Math.max(0, Math.min(1, Number(settings.volume) || 0.85));
+      el.muted = !!settings.muted;
+      el.playbackRate = Number(settings.speed) || 1.0;
+      if ('preservesPitch' in el) el.preservesPitch = true;
+      if ('webkitPreservesPitch' in el) el.webkitPreservesPitch = true;
+    }
+
+    loopBtn.classList.toggle('active', !!settings.loop);
+    loopLabel.textContent = settings.loop ? '循环' : '单次';
+
+    volumeSlider.value = String(settings.muted ? 0 : settings.volume);
+    muteBtn.textContent = (settings.muted || settings.volume <= 0.001) ? '🔇' : (settings.volume < 0.5 ? '🔉' : '🔊');
+    autoPlayChk.checked = !!settings.autoPlay;
+
+    speedBtns.forEach(btn => {
+      const v = parseFloat(btn.dataset.speed);
+      btn.classList.toggle('active', Math.abs(v - settings.speed) < 0.01);
+    });
+  }
+
+  function updatePlayStateUI() {
+    const playing = !activeMedia.paused && !activeMedia.ended;
+    playBtn.classList.toggle('playing', playing);
+    playIcon.textContent = playing ? '⏸' : '▶';
+    playLabel.textContent = playing ? '暂停' : '播放';
+    statusPill.classList.toggle('playing', playing);
+    statusText.textContent = playing ? '播放中' : (activeMedia.currentTime > 0.05 && !activeMedia.ended ? '已暂停' : '就绪');
+    videoWrap.classList.toggle('is-playing', playing);
+  }
+
+  function updateProgressUI() {
+    const dur = activeMedia.duration;
+    const cur = activeMedia.currentTime || 0;
+    const valid = Number.isFinite(dur) && dur > 0;
+    const ratio = valid ? Math.max(0, Math.min(1, cur / dur)) : 0;
+
+    curTimeEl.textContent = formatTime(cur, dur);
+    durTimeEl.textContent = valid ? formatTime(dur, dur) : '0:00.0';
+
+    if (!isSeekingSlider) {
+      seekSlider.value = String(Math.round(ratio * 1000));
+    }
+    updateSliderFill(seekSlider, ratio * 100);
+    drawWaveform(ratio);
+  }
+
+  function updateSliderFill(slider, percent) {
+    const pct = Math.max(0, Math.min(100, percent));
+    slider.style.background = `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pct}%, var(--surface-2) ${pct}%, var(--surface-2) 100%)`;
+  }
+
+  function startRaf() {
+    if (rafId !== null) return;
+    const tick = () => {
+      updateProgressUI();
+      if (!activeMedia.paused && !activeMedia.ended) {
+        rafId = requestAnimationFrame(tick);
+      } else {
+        rafId = null;
+      }
+    };
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function stopRaf() {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  }
+
+  async function togglePlay() {
+    if (!currentFileInfo) return;
+    try {
+      if (activeMedia.paused || activeMedia.ended) {
+        if (activeMedia.ended) activeMedia.currentTime = 0;
+        applySettingsToMedia();
+        await activeMedia.play();
+      } else {
+        activeMedia.pause();
+      }
+    } catch (err) {
+      showError('播放失败：' + (err && err.message ? err.message : '浏览器不支持该音频/视频编码'));
+    }
+    updatePlayStateUI();
+    updateProgressUI();
+  }
+
+  function seekToRatio(ratio) {
+    const dur = activeMedia.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    const clamped = Math.max(0, Math.min(1, ratio));
+    activeMedia.currentTime = clamped * dur;
+    updateProgressUI();
+  }
+
+  // Waveform drawing
+  function getCssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function drawWaveform(progressRatio) {
+    if (waveCard.classList.contains('hidden')) return;
+    const rect = waveCanvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.round(rect.width * dpr);
+    const h = Math.round(rect.height * dpr);
+    if (waveCanvas.width !== w || waveCanvas.height !== h) {
+      waveCanvas.width = w;
+      waveCanvas.height = h;
+    }
+
+    const ctx = waveCanvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    const cw = rect.width;
+    const ch = rect.height;
+    const midY = ch / 2;
+
+    // Subtle center baseline
+    ctx.strokeStyle = getCssVar('--border');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, midY);
+    ctx.lineTo(cw, midY);
+    ctx.stroke();
+
+    if (!waveformPeaks || waveformPeaks.length === 0) return;
+
+    const barCount = Math.max(24, Math.min(waveformPeaks.length, Math.floor(cw / 3.2)));
+    const step = waveformPeaks.length / barCount;
+    const barSlot = cw / barCount;
+    const barW = Math.max(1.5, Math.min(3.5, barSlot * 0.65));
+    const maxAmp = ch * 0.42;
+
+    const playedColor = getCssVar('--wave-played');
+    const unplayedColor = getCssVar('--wave-unplayed');
+    const hoverColor = getCssVar('--wave-hover');
+    const playX = progressRatio * cw;
+
+    for (let i = 0; i < barCount; i++) {
+      const s = Math.floor(i * step);
+      const e = Math.max(s + 1, Math.floor((i + 1) * step));
+      let peak = 0;
+      for (let j = s; j < e && j < waveformPeaks.length; j++) {
+        if (waveformPeaks[j] > peak) peak = waveformPeaks[j];
+      }
+      const amp = Math.max(2, peak * maxAmp);
+      const x = i * barSlot + (barSlot - barW) / 2;
+      const barCenter = x + barW / 2;
+
+      ctx.fillStyle = barCenter <= playX ? playedColor : unplayedColor;
+      ctx.beginPath();
+      ctx.roundRect(x, midY - amp, barW, amp * 2, Math.min(barW / 2, 2));
+      ctx.fill();
+    }
+
+    // Hover guide line
+    if (hoverRatio !== null) {
+      const hx = hoverRatio * cw;
+      ctx.strokeStyle = hoverColor;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(hx, 0);
+      ctx.lineTo(hx, ch);
+      ctx.stroke();
+    }
+
+    // Playhead line
+    if (progressRatio > 0 || !activeMedia.paused) {
+      ctx.strokeStyle = playedColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(playX, 0);
+      ctx.lineTo(playX, ch);
+      ctx.stroke();
+    }
+  }
+
+  async function decodeWaveform(url, seq) {
+    waveMsg.textContent = '正在生成音频波形...';
+    waveMsg.style.display = 'flex';
+    waveformPeaks = null;
+    drawWaveform(0);
+
+    try {
+      const resp = await fetch(url);
+      if (seq !== loadSeq) return;
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const arrayBuffer = await resp.arrayBuffer();
+      if (seq !== loadSeq) return;
+
+      if (!audioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AC();
+      }
+      const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+      if (seq !== loadSeq) return;
+
+      const sr = (decoded.sampleRate / 1000).toFixed(1).replace(/\.0$/, '') + ' kHz';
+      const chStr = decoded.numberOfChannels === 1 ? '单声道' : (decoded.numberOfChannels === 2 ? '立体声' : `${decoded.numberOfChannels}ch`);
+      audioMetaExtra = `${sr} · ${chStr}`;
+      updateMetaRow();
+
+      const totalSamples = decoded.length;
+      const bucketCount = 320;
+      const samplesPerBucket = Math.max(1, Math.floor(totalSamples / bucketCount));
+      const channels = [];
+      for (let c = 0; c < decoded.numberOfChannels; c++) {
+        channels.push(decoded.getChannelData(c));
+      }
+
+      const peaks = new Float32Array(bucketCount);
+      let globalMax = 0.001;
+      for (let i = 0; i < bucketCount; i++) {
+        const start = i * samplesPerBucket;
+        const end = Math.min(totalSamples, start + samplesPerBucket);
+        const stride = Math.max(1, Math.floor((end - start) / 128));
+        let maxVal = 0;
+        for (let s = start; s < end; s += stride) {
+          let v = 0;
+          for (let c = 0; c < channels.length; c++) {
+            const av = Math.abs(channels[c][s]);
+            if (av > v) v = av;
+          }
+          if (v > maxVal) maxVal = v;
+        }
+        peaks[i] = maxVal;
+        if (maxVal > globalMax) globalMax = maxVal;
+      }
+
+      // Normalize softly so quiet SFX remain clearly visible while preserving dynamics
+      const scale = globalMax < 0.7 ? (0.85 / globalMax) : 1.0;
+      for (let i = 0; i < peaks.length; i++) {
+        peaks[i] = Math.min(1, peaks[i] * scale);
+      }
+
+      waveformPeaks = peaks;
+      waveMsg.style.display = 'none';
+      postHost({ type: 'log', message: 'Waveform decoded: ' + decoded.duration.toFixed(2) + 's, ' + decoded.sampleRate + 'Hz' });
+      updateProgressUI();
+    } catch (err) {
+      if (seq !== loadSeq) return;
+      waveformPeaks = null;
+      if (isVideoMode) {
+        waveCard.classList.add('hidden');
+      } else {
+        waveMsg.textContent = '波形不可用（仍可正常播放）';
+      }
+    }
+  }
+
+  function unloadMedia() {
+    loadSeq++;
+    stopRaf();
+    currentFileInfo = null;
+    waveformPeaks = null;
+    audioMetaExtra = '';
+    showError('');
+    for (const el of [audioEl, videoEl]) {
+      el.pause();
+      el.removeAttribute('src');
+      el.load();
+    }
+    updatePlayStateUI();
+    updateProgressUI();
+  }
+
+  function loadMedia(payload) {
+    unloadMedia();
+    const seq = ++loadSeq;
+    currentFileInfo = payload;
+    if (payload.settings) {
+      settings = { ...settings, ...payload.settings };
+    }
+    applySettingsToMedia();
+
+    isVideoMode = !!payload.isVideo;
+    activeMedia = isVideoMode ? videoEl : audioEl;
+
+    typeBadge.textContent = isVideoMode ? 'VIDEO' : 'AUDIO';
+    typeBadge.classList.toggle('video', isVideoMode);
+    fileNameEl.textContent = payload.fileName || '';
+    fileNameEl.title = payload.fileName || '';
+
+    videoWrap.classList.toggle('active', isVideoMode);
+    waveCard.classList.toggle('compact', isVideoMode);
+    waveCard.classList.toggle('hidden', isVideoMode && !payload.canDecodeWaveform);
+
+    updateMetaRow();
+    updatePlayStateUI();
+    updateProgressUI();
+
+    activeMedia.src = payload.url;
+    activeMedia.load();
+
+    if (payload.canDecodeWaveform) {
+      decodeWaveform(payload.url, seq);
+    }
+  }
+
+  // Bind media events for both audio and video
+  for (const el of [audioEl, videoEl]) {
+    el.addEventListener('loadedmetadata', () => {
+      if (el !== activeMedia) return;
+      applySettingsToMedia();
+      if (el === videoEl && el.paused && el.currentTime === 0) {
+        try { el.currentTime = 0.001; } catch {}
+      }
+      updateMetaRow();
+      updateProgressUI();
+      if (settings.autoPlay) {
+        el.play().catch(() => {});
+      }
+    });
+
+    el.addEventListener('play', () => {
+      if (el !== activeMedia) return;
+      showError('');
+      updatePlayStateUI();
+      startRaf();
+    });
+
+    el.addEventListener('pause', () => {
+      if (el !== activeMedia) return;
+      stopRaf();
+      updatePlayStateUI();
+      updateProgressUI();
+    });
+
+    el.addEventListener('ended', () => {
+      if (el !== activeMedia) return;
+      stopRaf();
+      updatePlayStateUI();
+      updateProgressUI();
+    });
+
+    el.addEventListener('timeupdate', () => {
+      if (el !== activeMedia) return;
+      if (rafId === null) updateProgressUI();
+    });
+
+    el.addEventListener('error', () => {
+      if (el !== activeMedia || !el.getAttribute('src')) return;
+      showError('当前格式或编码暂不被系统 WebView2 原生支持，请双击用外部播放器打开。');
+    });
+  }
+
+  // UI interactions
+  playBtn.addEventListener('click', togglePlay);
+  videoWrap.addEventListener('click', togglePlay);
+
+  loopBtn.addEventListener('click', () => {
+    settings.loop = !settings.loop;
+    applySettingsToMedia();
+    saveSettings();
+  });
+
+  muteBtn.addEventListener('click', () => {
+    settings.muted = !settings.muted;
+    applySettingsToMedia();
+    saveSettings();
+  });
+
+  volumeSlider.addEventListener('input', () => {
+    const v = parseFloat(volumeSlider.value);
+    settings.volume = v;
+    settings.muted = v <= 0.001;
+    applySettingsToMedia();
+    saveSettings();
+  });
+
+  speedBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      settings.speed = parseFloat(btn.dataset.speed);
+      applySettingsToMedia();
+      saveSettings();
+    });
+  });
+
+  autoPlayChk.addEventListener('change', () => {
+    settings.autoPlay = autoPlayChk.checked;
+    saveSettings();
+  });
+
+  seekSlider.addEventListener('input', () => {
+    isSeekingSlider = true;
+    const ratio = parseFloat(seekSlider.value) / 1000;
+    seekToRatio(ratio);
+  });
+
+  seekSlider.addEventListener('change', () => {
+    isSeekingSlider = false;
+  });
+
+  // Waveform mouse scrub
+  function ratioFromPointer(e) {
+    const rect = waveCard.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  }
+
+  function updateHoverTip(ratio) {
+    const dur = activeMedia.duration;
+    if (ratio === null || !Number.isFinite(dur) || dur <= 0) {
+      waveTip.style.display = 'none';
+      return;
+    }
+    const rect = waveCard.getBoundingClientRect();
+    const x = Math.max(26, Math.min(rect.width - 26, ratio * rect.width));
+    waveTip.style.left = x + 'px';
+    waveTip.textContent = formatTime(ratio * dur, dur);
+    waveTip.style.display = 'block';
+  }
+
+  waveCard.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    isDraggingWave = true;
+    waveCard.setPointerCapture(e.pointerId);
+    const r = ratioFromPointer(e);
+    hoverRatio = r;
+    seekToRatio(r);
+    updateHoverTip(r);
+  });
+
+  waveCard.addEventListener('pointermove', (e) => {
+    const r = ratioFromPointer(e);
+    hoverRatio = r;
+    updateHoverTip(r);
+    if (isDraggingWave) {
+      seekToRatio(r);
+    } else {
+      const dur = activeMedia.duration;
+      const ratio = Number.isFinite(dur) && dur > 0 ? (activeMedia.currentTime / dur) : 0;
+      drawWaveform(ratio);
+    }
+  });
+
+  waveCard.addEventListener('pointerup', (e) => {
+    if (!isDraggingWave) return;
+    isDraggingWave = false;
+    try { waveCard.releasePointerCapture(e.pointerId); } catch {}
+  });
+
+  waveCard.addEventListener('pointerleave', () => {
+    hoverRatio = null;
+    updateHoverTip(null);
+    const dur = activeMedia.duration;
+    const ratio = Number.isFinite(dur) && dur > 0 ? (activeMedia.currentTime / dur) : 0;
+    drawWaveform(ratio);
+  });
+
+  // Keyboard shortcuts when preview pane itself has focus
+  document.querySelectorAll('button').forEach(b => b.addEventListener('click', () => b.blur()));
+
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') e.preventDefault();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      togglePlay();
+    } else if (e.code === 'ArrowLeft') {
+      e.preventDefault();
+      const step = (activeMedia.duration && activeMedia.duration < 15) ? 1 : 5;
+      activeMedia.currentTime = Math.max(0, (activeMedia.currentTime || 0) - step);
+      updateProgressUI();
+    } else if (e.code === 'ArrowRight') {
+      e.preventDefault();
+      const step = (activeMedia.duration && activeMedia.duration < 15) ? 1 : 5;
+      if (Number.isFinite(activeMedia.duration)) {
+        activeMedia.currentTime = Math.min(activeMedia.duration, (activeMedia.currentTime || 0) + step);
+        updateProgressUI();
+      }
+    } else if (e.key === 'l' || e.key === 'L') {
+      settings.loop = !settings.loop;
+      applySettingsToMedia();
+      saveSettings();
+    } else if (e.key === 'm' || e.key === 'M') {
+      settings.muted = !settings.muted;
+      applySettingsToMedia();
+      saveSettings();
+    }
+  });
+
+  // Redraw canvas sharply on resize
+  const ro = new ResizeObserver(() => {
+    const dur = activeMedia.duration;
+    const ratio = Number.isFinite(dur) && dur > 0 ? (activeMedia.currentTime / dur) : 0;
+    drawWaveform(ratio);
+  });
+  ro.observe(waveCard);
+
+  // Messages from C# host
+  if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (!msg || !msg.type) return;
+      if (msg.type === 'load') {
+        loadMedia(msg);
+      } else if (msg.type === 'unload') {
+        unloadMedia();
+      } else if (msg.type === 'togglePlay') {
+        togglePlay();
+      } else if (msg.type === 'error') {
+        unloadMedia();
+        showError(msg.message || '加载失败');
+      }
+    });
+  }
+
+  postHost({ type: 'ready' });
+})();
+</script>
+</body>
+</html>
