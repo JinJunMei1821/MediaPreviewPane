@@ -1,19 +1,21 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'SilentlyContinue'
 
 $clsid = '{9F4E2B61-7A3D-4E8C-9B12-5D8A1E4C7F30}'
 $previewIid = '{8895b1c6-b41f-4c1c-a562-0d564250836f}'
 
+Get-Process -Name prevhost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
 $extensions = @(
-    '.ogg', '.oga', '.opus', '.mp3', '.wav', '.flac', '.m4a', '.aac', '.weba',
-    '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.mkv'
+    '.ogg', '.oga', '.opus', '.mp3', '.wav', '.flac', '.m4a', '.aac', '.weba', '.aiff',
+    '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.mkv', '.wmv'
 )
 
 foreach ($ext in $extensions) {
     $extKey = "HKCU:\Software\Classes\$ext\ShellEx\$previewIid"
     if (Test-Path $extKey) {
-        $val = (Get-ItemProperty -Path $extKey -ErrorAction SilentlyContinue).'(default)'
+        $val = (Get-ItemProperty -Path $extKey -Name '(default)' -ErrorAction SilentlyContinue).'(default)'
         if ($val -eq $clsid) {
-            Remove-Item -Path $extKey -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $extKey -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -27,8 +29,6 @@ $clsidKey = "HKCU:\Software\Classes\CLSID\$clsid"
 if (Test-Path $clsidKey) {
     Remove-Item -Path $clsidKey -Recurse -Force -ErrorAction SilentlyContinue
 }
-
-Get-Process -Name prevhost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 $sig = '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);'
 $type = Add-Type -MemberDefinition $sig -Name 'ShellNotifyUnreg' -Namespace 'MediaPreviewUnreg' -PassThru

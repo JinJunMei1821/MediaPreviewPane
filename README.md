@@ -1,92 +1,43 @@
 # MediaPreviewPane
 
-Windows 资源管理器「预览窗格（`Alt + P`）」音视频预览插件（`IPreviewHandler`）。
+极简、纯原生 Rust 编写的 Windows 资源管理器「预览窗格（`Alt + P`）」音视频试听插件。
 
-无需打开任何独立软件，平时不占任务栏/托盘；仅在资源管理器选中音频或视频文件且开启预览窗格时出现，切走即停，不锁定磁盘文件（预览中可正常重命名/移动/删除）。
+- **零外部运行时依赖**：单个约 3 MB 的原生 DLL（静态链接 CRT，无需 .NET、无需 WebView2 / Chromium、无需 VC++ 运行库）
+- **极致轻盈**：直接运行在系统 `prevhost.exe` 内，无额外子进程，实测内存约 **16 MB**（私有内存 ~6 MB），冷启动 ~15 ms，切歌 ~3 ms（复访缓存 ~1 ms）
+- **零存在感 & 不锁文件**：平时不占任务栏/托盘，仅在选中媒体文件且开启预览窗格时出现；音频与中小视频读入内存后立刻释放句柄，重命名/移动/删除文件绝不卡锁
+- **简练现代原生 UI**：Direct2D + DirectWrite 高 DPI 矢量绘制，自动跟随 Windows 深/浅色主题与系统强调色
 
-## 功能特性
-- **音频波形线（Waveform）**：点击或拖动波形任意位置精准跳转，悬停显示时间点
-- **视频预览**：选中即显示画面帧，点击画面或按播放键播放（25 MB 以内短视频同时显示音频波形）
-- **播放控制**：播放/暂停（带清晰状态提示）、循环/单次切换、倍速（`0.5x` ~ `2.0x`，保持原调）、进度条、音量/静音、可选「选中自动播放」（默认关闭，设置自动记住）
+## 支持格式
+- **音频**（内置纯 Rust 解码 + WASAPI 低延迟输出，无需系统解码器）：
+  `.ogg` `.oga` `.opus` `.mp3` `.wav` `.flac` `.m4a` `.aac` `.weba` `.aiff`
+- **视频**（调用 Windows 原生 Media Foundation 硬件解码）：
+  `.mp4` `.m4v` `.mov` `.webm` `.mkv` `.ogv` `.wmv`
+
+## 功能与快捷键
+- **双层音频波形（峰值 + RMS）**：点击或拖动任意位置精准跳转，鼠标悬停显示精确时间点；24 MB 以内短视频同时显示音频波形
+- **播放控制**：播放/暂停、循环开关、**原调倍速**（`0.5×` `0.75×` `1×` `1.25×` `1.5×` `2×`，右键重置 `1×`，支持滚轮微调）、音量/静音、选中自动播放开关（默认关闭，设置自动记忆）
 - **快捷键**：
-  - 在资源管理器选中文件后直接按 **`Space`（空格）** 播放/暂停（重命名、搜索框、地址栏输入时自动避让）
-  - 预览窗格内支持 `Space`（播放/暂停）、`←` / `→`（步进跳转）、`L`（循环）、`M`（静音）
-- **支持格式**：
-  - 音频：`.ogg` `.oga` `.opus` `.mp3` `.wav` `.flac` `.m4a` `.aac` `.weba`
-  - 视频：`.mp4` `.m4v` `.webm` `.mov` `.ogv` `.mkv`
+  - 在资源管理器文件列表选中后，直接按 `Space`（空格）即可试听/暂停（自动避让重命名、搜索框、地址栏）
+  - 预览窗格获焦时支持：`Space` 播放/暂停、`←` / `→` 跳转、`L` 循环、`M` 静音、`[` / `]` 调速、`↑` / `↓` 音量
 
-## 系统兼容性与依赖
-- **支持系统**：Windows 10 / Windows 11 (x64)
-- **运行依赖**：
-  1. **.NET 9.0 Desktop Runtime (x64)**（因 .NET COM Hosting 不支持自包含打包，需系统已安装对应 Desktop Runtime，可用 `winget install --id Microsoft.DotNet.DesktopRuntime.9 --exact` 一键安装）
-  2. **Microsoft Edge WebView2 Runtime**（Windows 10 / 11 通常已自带）
-- **Windows 11 注意事项**：
-  - 若当前右侧打开的是「详细信息窗格」，请按 `Alt + P` 切换为「预览窗格」。
-  - Windows 11 新版安全更新会出于系统安全策略默认拦截「从互联网下载且带有安全标记（MOTW）」的媒体文件预览；右键该媒体文件 → 属性 → 勾选「解除锁定」即可正常预览（本地文件不受影响）。
-  - 注册脚本已内置 `Unblock-File`，会自动解除插件 DLL 自身的下载锁定。
+## 安装与卸载（Win10 / Win11 x64，无需管理员权限）
+1. 下载 [最新 Release 压缩包](https://github.com/JinJunMei1821/MediaPreviewPane/releases/latest) 并解压到固定目录（例如 `%LOCALAPPDATA%\MediaPreviewPane`）
+2. 双击 `register.bat`（或运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\Scripts\register.ps1`）
+3. 打开资源管理器按 `Alt + P` 开启预览窗格，选中任意音视频即可使用（不影响原本双击打开方式）
+4. 如需卸载：双击 `unregister.bat`，然后直接删除目录即可
 
-## 快速安装
-
-### 方式一：下载预编译包（推荐，约 1 MB）
-1. 确保已安装 **.NET 9.0 Desktop Runtime (x64)**：
-   ```powershell
-   winget install --id Microsoft.DotNet.DesktopRuntime.9 --exact
-   ```
-2. 前往 [Releases](https://github.com/JinJunMei1821/MediaPreviewPane/releases/latest) 下载 `MediaPreviewPane-win-x64.zip`。
-3. 解压到一个**固定目录**（例如 `%LOCALAPPDATA%\MediaPreviewPane` 或 `D:\Tools\MediaPreviewPane`，注册后请勿随意移动或删除）。
-4. 双击运行 `register.bat`（仅写入当前用户 `HKCU`，**无需管理员权限**，不影响双击默认播放器）。
-5. 打开资源管理器按 `Alt + P` 开启预览窗格，点选任意音视频文件即可使用。
-
-### 方式二：从源码编译安装（需 .NET 9 SDK）
-```powershell
-git clone https://github.com/JinJunMei1821/MediaPreviewPane.git
-cd MediaPreviewPane
-.\build.bat
+## 从源码构建
+需要 Rust（`x86_64-pc-windows-msvc`）：
+```bat
+build.bat
 ```
 
-### 卸载
-运行目录内的 `unregister.bat` 即可彻底清理注册表并结束 `prevhost.exe`，之后直接删除整个文件夹即可。
-
----
-
-## AI Agent 自动部署指引
-
-如果你是 AI Agent，请按以下步骤为用户自动安装并验证本插件：
-
-1. **检查系统与运行库**：
-   - 确认当前为 Windows x64。
-   - 检查是否已安装 **.NET 9.0 Desktop Runtime (x64)**：
-     ```powershell
-     Test-Path "$env:ProgramFiles\dotnet\shared\Microsoft.WindowsDesktop.App\9.*"
-     ```
-     若返回 `False`，安装它（优先使用 winget）：
-     ```powershell
-     winget install --id Microsoft.DotNet.DesktopRuntime.9 --exact --accept-source-agreements --accept-package-agreements
-     ```
-   - 确认 Edge WebView2 Runtime 存在（Win10/Win11 通常已预装）。
-2. **准备固定安装目录**：
-   - 默认使用 `$installDir = Join-Path $env:LOCALAPPDATA 'MediaPreviewPane'`（不要放在临时目录）。
-3. **获取程序文件（优先下载 Release，失败则源码构建）**：
-   - 下载最新 Release 预编译包并解压到 `$installDir`：
-     `https://github.com/JinJunMei1821/MediaPreviewPane/releases/latest/download/MediaPreviewPane-win-x64.zip`
-   - 确认存在 `$installDir\dist\MediaPreviewPane.comhost.dll` 和 `$installDir\Scripts\register.ps1`。
-   - 若无法访问 Release 资产但本机有 `.NET 9 SDK`，可改为：
-     ```powershell
-     git clone https://github.com/JinJunMei1821/MediaPreviewPane.git $installDir
-     dotnet publish "$installDir\MediaPreviewPane.csproj" -c Release -r win-x64 --self-contained false -o "$installDir\dist"
-     ```
-4. **注册插件（无需管理员权限）**：
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File "$installDir\Scripts\register.ps1"
-   ```
-5. **检查资源管理器预览设置并验证**：
-   - 检查 `HKCU:\Software\Classes\CLSID\{9F4E2B61-7A3D-4E8C-9B12-5D8A1E4C7F30}\InprocServer32` 的默认值指向已存在的 `MediaPreviewPane.comhost.dll`。
-   - 检查 `HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced` 中 `ShowPreviewHandlers` 不为 `0`（如果为 `0`，说明系统关闭了“在预览窗格中显示预览处理程序”，提示用户开启或改为 `1`）。
-6. **汇报给用户**：
-   - 告知安装路径与卸载脚本路径（`$installDir\unregister.bat`）。
-   - 告知用法：打开资源管理器按 `Alt + P` 开启预览窗格，点选 `.ogg`/`.mp3`/`.wav`/`.m4a`/`.mp4` 等文件，按 `Space` 或点击播放键即可试听。
-
-## 配置与日志路径
-`%USERPROFILE%\AppData\LocalLow\MediaPreviewPane\`
-- `settings.json`：自动记住循环、倍速、音量、自动播放开关
-- `preview.log`：轻量运行日志
+## 给 AI Agent 的自动部署指引
+```powershell
+$installDir = "$env:LOCALAPPDATA\MediaPreviewPane"
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+$zip = "$env:TEMP\MediaPreviewPane-win-x64.zip"
+Invoke-WebRequest -Uri "https://github.com/JinJunMei1821/MediaPreviewPane/releases/latest/download/MediaPreviewPane-win-x64.zip" -OutFile $zip
+Expand-Archive -Path $zip -DestinationPath $installDir -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File "$installDir\Scripts\register.ps1"
+```

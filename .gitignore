@@ -1,8 +1,5 @@
-bin/
-obj/
-dist/
-release/
-.vs/
-*.user
-*.suo
-*.zip
+/target/
+/dist/
+/release/
+*.pdb
+*.log

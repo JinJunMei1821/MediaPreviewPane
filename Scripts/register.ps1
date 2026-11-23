@@ -6,32 +6,27 @@ $prevhostAppId = '{6d2b5079-2f0b-48dd-ab7f-97cec514d30b}'
 
 $root = Split-Path -Parent $PSScriptRoot
 $distDir = Join-Path $root 'dist'
-$dllPath = Join-Path $distDir 'MediaPreviewPane.comhost.dll'
+$dllPath = Join-Path $distDir 'MediaPreviewPane.dll'
 if (-not (Test-Path $dllPath)) {
-    throw "未找到 $dllPath ，请先执行构建或下载 Release 压缩包。"
+    # Fallback: check root directory (single-DLL release layout)
+    $altPath = Join-Path $root 'MediaPreviewPane.dll'
+    if (Test-Path $altPath) {
+        $dllPath = $altPath
+        $distDir = $root
+    } else {
+        throw "未找到 MediaPreviewPane.dll，请先执行构建或下载 Release 压缩包。"
+    }
 }
 
-# Check .NET 9 Desktop Runtime (x64)
-$desktopShared = Join-Path $env:ProgramFiles 'dotnet\shared\Microsoft.WindowsDesktop.App'
-$hasNet9Desktop = $false
-if (Test-Path $desktopShared) {
-    $hasNet9Desktop = [bool](Get-ChildItem -Path $desktopShared -Directory -Filter '9.*' -ErrorAction SilentlyContinue)
-}
-if (-not $hasNet9Desktop) {
-    Write-Warning "未检测到 .NET 9.0 Desktop Runtime (x64)。请安装后再使用预览窗格："
-    Write-Warning "  winget install --id Microsoft.DotNet.DesktopRuntime.9 --exact"
-    Write-Warning "  或访问 https://dotnet.microsoft.com/download/dotnet/9.0 下载 Windows x64 Desktop Runtime"
-}
-
-# Remove Mark-of-the-Web (Zone.Identifier) so prevhost.exe low-integrity sandbox can load downloaded DLLs
-Get-ChildItem -Path $distDir -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
+# Remove Mark-of-the-Web (Zone.Identifier) so prevhost.exe can load downloaded DLLs cleanly
+Get-ChildItem -Path $distDir -Filter '*.dll' -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
 # Stop stale preview hosts so updated binaries take effect immediately
 Get-Process -Name prevhost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 $extensions = @(
-    '.ogg', '.oga', '.opus', '.mp3', '.wav', '.flac', '.m4a', '.aac', '.weba',
-    '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.mkv'
+    '.ogg', '.oga', '.opus', '.mp3', '.wav', '.flac', '.m4a', '.aac', '.weba', '.aiff',
+    '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.mkv', '.wmv'
 )
 
 # 1. Register COM CLSID under HKCU (no admin required)
@@ -41,6 +36,7 @@ New-Item -Path $inprocKey -Force | Out-Null
 Set-ItemProperty -Path $clsidKey -Name '(default)' -Value 'MediaPreviewPaneHandler'
 Set-ItemProperty -Path $clsidKey -Name 'DisplayName' -Value 'Media Preview Pane'
 Set-ItemProperty -Path $clsidKey -Name 'AppID' -Value $prevhostAppId
+Set-ItemProperty -Path $clsidKey -Name 'DisableLowILProcessIsolation' -Value 1 -Type DWord
 Set-ItemProperty -Path $inprocKey -Name '(default)' -Value $dllPath
 Set-ItemProperty -Path $inprocKey -Name 'ThreadingModel' -Value 'Apartment'
 
@@ -61,6 +57,6 @@ $sig = '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int 
 $type = Add-Type -MemberDefinition $sig -Name 'ShellNotifyReg' -Namespace 'MediaPreviewReg' -PassThru
 $type::SHChangeNotify(0x08000000, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero)
 
-Write-Host "MediaPreviewPane 注册成功！" -ForegroundColor Green
+Write-Host "MediaPreviewPane (Rust Native) 注册成功！" -ForegroundColor Green
 Write-Host "DLL: $dllPath"
 Write-Host "已关联格式: $($extensions -join ', ')"

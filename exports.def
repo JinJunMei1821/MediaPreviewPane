@@ -1,0 +1,4 @@
+LIBRARY MediaPreviewPane
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow   PRIVATE
