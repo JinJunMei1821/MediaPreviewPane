@@ -26,7 +26,7 @@ Get-Process -Name prevhost -ErrorAction SilentlyContinue | Stop-Process -Force -
 
 $extensions = @(
     '.ogg', '.oga', '.opus', '.mp3', '.wav', '.flac', '.m4a', '.aac', '.weba', '.aiff',
-    '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.mkv', '.wmv'
+    '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.mkv', '.wmv', '.avi'
 )
 
 # 1. Register COM CLSID under HKCU (no admin required)
@@ -36,7 +36,7 @@ New-Item -Path $inprocKey -Force | Out-Null
 Set-ItemProperty -Path $clsidKey -Name '(default)' -Value 'MediaPreviewPaneHandler'
 Set-ItemProperty -Path $clsidKey -Name 'DisplayName' -Value 'Media Preview Pane'
 Set-ItemProperty -Path $clsidKey -Name 'AppID' -Value $prevhostAppId
-Set-ItemProperty -Path $clsidKey -Name 'DisableLowILProcessIsolation' -Value 1 -Type DWord
+Remove-ItemProperty -Path $clsidKey -Name 'DisableLowILProcessIsolation' -ErrorAction SilentlyContinue
 Set-ItemProperty -Path $inprocKey -Name '(default)' -Value $dllPath
 Set-ItemProperty -Path $inprocKey -Name 'ThreadingModel' -Value 'Apartment'
 

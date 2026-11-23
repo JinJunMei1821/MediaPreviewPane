@@ -63,19 +63,21 @@ impl UserSettings {
 }
 
 pub fn data_dir() -> PathBuf {
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let p = PathBuf::from(local).join("MediaPreviewPane");
-        if fs::create_dir_all(&p).is_ok() {
-            return p;
-        }
-    }
+    // prevhost.exe runs at Low Integrity Level; AppData\LocalLow is writable from both Low and Medium IL.
     if let Ok(profile) = std::env::var("USERPROFILE") {
         let p = PathBuf::from(profile)
             .join("AppData")
             .join("LocalLow")
             .join("MediaPreviewPane");
-        let _ = fs::create_dir_all(&p);
-        return p;
+        if fs::create_dir_all(&p).is_ok() {
+            return p;
+        }
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let p = PathBuf::from(local).join("MediaPreviewPane");
+        if fs::create_dir_all(&p).is_ok() {
+            return p;
+        }
     }
     std::env::temp_dir().join("MediaPreviewPane")
 }

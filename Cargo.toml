@@ -1,6 +1,6 @@
 [package]
 name = "media_preview_pane"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 description = "Ultra-lightweight native Rust Windows Explorer Preview Pane audio/video player"
 

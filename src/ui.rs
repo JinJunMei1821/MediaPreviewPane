@@ -1,8 +1,12 @@
+use std::collections::VecDeque;
+use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows_numerics::Vector2 as D2D_POINT_2F;
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED, D2D1_PIXEL_FORMAT,
@@ -32,14 +36,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RIGHT, VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GA_ROOT,
-    GUITHREADINFO, GetAncestor, GetClassNameW, GetClientRect, GetForegroundWindow,
-    GetGUIThreadInfo, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, IDC_ARROW,
-    IDC_HAND, KillTimer, LoadCursorW, MoveWindow, RegisterClassW, SW_SHOWNA, SetCursor,
-    SetTimer, SetWindowLongPtrW, ShowWindow, WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WM_DESTROY,
-    WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETTINGCHANGE,
-    WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_VISIBLE,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GA_ROOT, GUITHREADINFO, GetAncestor, GetClassNameW, GetClientRect, GetForegroundWindow,
+    GetGUIThreadInfo, GetMessageW, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId,
+    IDC_ARROW, IDC_HAND, KillTimer, LoadCursorW, MSG, MoveWindow, PostMessageW, RegisterClassW,
+    SW_HIDE, SW_SHOWNA, SetCursor, SetParent, SetTimer, SetWindowLongPtrW, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WM_DESTROY, WM_ERASEBKGND,
+    WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD,
+    WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -52,6 +57,10 @@ use crate::video::{VideoPlayer, WM_APP_VIDEO_EVENT};
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_PRINTCLIENT: u32 = 0x0318;
+const WM_APP_UI_CMD: u32 = 0x8000 + 30;
+const WM_APP_MEDIA_LOADED: u32 = 0x8000 + 31;
+const MAX_AUDIO_MEM_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_VIDEO_MEM_BYTES: u64 = 48 * 1024 * 1024;
 const TIMER_RENDER: usize = 1;
 const TIMER_HOTKEY: usize = 2;
 const HOTKEY_SPACE_ID: i32 = 0x51A0;
@@ -200,9 +209,15 @@ impl Drop for D2DResources {
     }
 }
 
+type LoadedMediaSlot = Arc<Mutex<Option<(u64, Result<MediaInput, String>)>>>;
+
 pub struct PreviewWindow {
     hwnd: HWND,
+    parking_hwnd: HWND,
     parent_hwnd: HWND,
+    attached: bool,
+    active_gen: u64,
+    loaded_slot: LoadedMediaSlot,
     dpi: f32,
     theme: Theme,
     settings: UserSettings,
@@ -252,7 +267,7 @@ fn register_window_class() -> PCWSTR {
 }
 
 impl PreviewWindow {
-    pub fn create(parent: HWND, rc: RECT, input: MediaInput) -> Result<Box<Self>, String> {
+    pub fn create_parked(parking_hwnd: HWND) -> Result<Box<Self>, String> {
         let cls = register_window_class();
 
         let d2d_factory: ID2D1Factory = unsafe {
@@ -264,35 +279,26 @@ impl PreviewWindow {
                 .map_err(|e| format!("DWriteCreateFactory: {e}"))?
         };
 
-        let mut w = rc.right - rc.left;
-        let mut h = rc.bottom - rc.top;
-        if w <= 0 || h <= 0 {
-            let mut prc = RECT::default();
-            if unsafe { GetClientRect(parent, &mut prc) }.is_ok() {
-                w = (prc.right - prc.left).max(1);
-                h = (prc.bottom - prc.top).max(1);
-            } else {
-                w = w.max(1);
-                h = h.max(1);
-            }
-        }
-
         let settings = load_settings();
         let theme = detect_theme();
 
         let mut boxed = Box::new(Self {
             hwnd: HWND::default(),
-            parent_hwnd: parent,
+            parking_hwnd,
+            parent_hwnd: HWND::default(),
+            attached: false,
+            active_gen: 0,
+            loaded_slot: Arc::new(Mutex::new(None)),
             dpi: 96.0,
             theme,
             settings,
             d2d_factory,
             dwrite_factory,
             res: None,
-            kind: input.kind,
-            file_name: input.file_name.clone(),
-            ext_upper: input.ext.trim_start_matches('.').to_ascii_uppercase(),
-            file_size: input.file_size,
+            kind: MediaKind::Audio,
+            file_name: String::new(),
+            ext_upper: String::new(),
+            file_size: 0,
             audio_meta: None,
             waveform: None,
             waveform_slot: None,
@@ -317,12 +323,12 @@ impl PreviewWindow {
                 WINDOW_EX_STYLE(0),
                 cls,
                 w!("MediaPreviewPane"),
-                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-                rc.left,
-                rc.top,
-                w,
-                h,
-                Some(parent),
+                WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                0,
+                0,
+                1,
+                1,
+                Some(parking_hwnd),
                 None,
                 None,
                 None,
@@ -333,19 +339,7 @@ impl PreviewWindow {
         boxed.hwnd = hwnd;
         unsafe {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA_IDX, raw_ptr);
-            let dpi = GetDpiForWindow(hwnd);
-            if dpi > 0 {
-                boxed.dpi = dpi as f32;
-            }
-            let _ = ShowWindow(hwnd, SW_SHOWNA);
-            SetTimer(Some(hwnd), TIMER_HOTKEY, 120, None);
         }
-
-        boxed.load_media(input);
-        boxed.recompute_layout();
-        boxed.sync_hotkey();
-        boxed.invalidate();
-
         Ok(boxed)
     }
 
@@ -353,25 +347,140 @@ impl PreviewWindow {
         self.hwnd
     }
 
-    pub fn resize(&mut self, rc: RECT) {
+    fn resolve_bounds(&self, rc: RECT) -> (i32, i32, i32, i32) {
         let mut w = rc.right - rc.left;
         let mut h = rc.bottom - rc.top;
-        if w <= 0 || h <= 0 {
+        let mut l = rc.left;
+        let mut t = rc.top;
+        if (w <= 0 || h <= 0) && !self.parent_hwnd.0.is_null() {
             let mut prc = RECT::default();
             if unsafe { GetClientRect(self.parent_hwnd, &mut prc) }.is_ok() {
-                w = (prc.right - prc.left).max(1);
-                h = (prc.bottom - prc.top).max(1);
+                let pw = prc.right - prc.left;
+                let ph = prc.bottom - prc.top;
+                if pw > 0 && ph > 0 {
+                    l = prc.left;
+                    t = prc.top;
+                    w = pw;
+                    h = ph;
+                }
             }
         }
+        (l, t, w.max(1), h.max(1))
+    }
+
+    pub fn attach_and_preview(&mut self, epoch: u64, parent: HWND, rc: RECT, file_path: String) {
+        self.stop_media();
+        self.active_gen = epoch;
+        self.parent_hwnd = parent;
+        self.attached = true;
+        self.settings = load_settings();
+        self.theme = detect_theme();
+        self.hover_target = HitTarget::None;
+        self.hover_wave_ratio = None;
+        self.dragging_wave = false;
+        self.dragging_vol = false;
+
+        let (file_name, ext) = file_name_from_path(&file_path);
+        let kind = classify_extension(&ext);
+        self.kind = kind;
+        self.file_name = file_name.clone();
+        self.ext_upper = ext.trim_start_matches('.').to_ascii_uppercase();
+        self.file_size = 0;
+        self.audio_meta = None;
+        self.waveform = None;
+        self.error_msg = None;
+
+        if !self.hwnd.0.is_null() && !parent.0.is_null() {
+            let (l, t, w, h) = self.resolve_bounds(rc);
+            unsafe {
+                let _ = SetParent(self.hwnd, Some(parent));
+                let _ = ShowWindow(self.hwnd, SW_SHOWNA);
+                let _ = MoveWindow(self.hwnd, l, t, w, h, true);
+                let dpi = GetDpiForWindow(self.hwnd);
+                if dpi > 0 {
+                    self.dpi = dpi as f32;
+                }
+                SetTimer(Some(self.hwnd), TIMER_HOTKEY, 120, None);
+            }
+            self.recompute_layout();
+            self.sync_hotkey();
+            self.invalidate();
+        }
+
+        // Load file bytes off the UI/COM thread so disk I/O never stalls Explorer or painting
+        let slot = self.loaded_slot.clone();
+        let hwnd_usize = self.hwnd.0 as usize;
+        std::thread::spawn(move || {
+            let res = read_media_input(&file_path, file_name, ext, kind);
+            if let Ok(mut g) = slot.lock() {
+                *g = Some((epoch, res));
+            }
+            if hwnd_usize != 0 {
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(HWND(hwnd_usize as *mut _)),
+                        WM_APP_MEDIA_LOADED,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
+        });
+    }
+
+    pub fn reparent_or_resize(&mut self, epoch: u64, parent: HWND, rc: RECT) {
+        if epoch != self.active_gen || !self.attached || self.hwnd.0.is_null() {
+            return;
+        }
+        if !parent.0.is_null() && parent != self.parent_hwnd {
+            self.parent_hwnd = parent;
+            unsafe {
+                let _ = SetParent(self.hwnd, Some(parent));
+                let _ = ShowWindow(self.hwnd, SW_SHOWNA);
+            }
+        }
+        self.resize(rc);
+    }
+
+    pub fn resize_if_active(&mut self, epoch: u64, rc: RECT) {
+        if epoch != self.active_gen || !self.attached {
+            return;
+        }
+        self.resize(rc);
+    }
+
+    pub fn resize(&mut self, rc: RECT) {
+        if self.hwnd.0.is_null() {
+            return;
+        }
+        let (l, t, w, h) = self.resolve_bounds(rc);
+        unsafe {
+            let _ = MoveWindow(self.hwnd, l, t, w, h, true);
+        }
+    }
+
+    pub fn detach(&mut self, epoch: u64) {
+        if epoch != self.active_gen {
+            return;
+        }
+        self.attached = false;
+        self.parent_hwnd = HWND::default();
+        self.stop_media();
+        self.unregister_hotkey();
         if !self.hwnd.0.is_null() {
             unsafe {
-                let _ = MoveWindow(self.hwnd, rc.left, rc.top, w.max(1), h.max(1), true);
+                let _ = KillTimer(Some(self.hwnd), TIMER_HOTKEY);
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+                if !self.parking_hwnd.0.is_null() {
+                    let _ = SetParent(self.hwnd, Some(self.parking_hwnd));
+                }
+                let _ = MoveWindow(self.hwnd, 0, 0, 1, 1, false);
             }
         }
     }
 
-    pub fn focus(&self) {
-        if !self.hwnd.0.is_null() {
+    pub fn focus_if_active(&self, epoch: u64) {
+        if epoch == self.active_gen && self.attached && !self.hwnd.0.is_null() {
             unsafe { let _ = SetFocus(Some(self.hwnd)); }
         }
     }
@@ -688,16 +797,17 @@ impl PreviewWindow {
             MediaKind::Video => {
                 let scrub_h = 24.0f32;
                 let max_vid_h = (h - divider_y - pad_y - scrub_h - ctrl_h - 22.0).max(80.0);
+                let min_vid_h = 120.0f32.min(max_vid_h);
                 let vt = divider_y + 7.0;
                 let vid_h = if let Some(vp) = &self.video_player {
                     let (nw, nh) = vp.native_size();
                     if nw > 0 && nh > 0 {
-                        (inner_w * (nh as f32 / nw as f32)).clamp(120.0, max_vid_h)
+                        (inner_w * (nh as f32 / nw as f32)).clamp(min_vid_h, max_vid_h)
                     } else {
-                        (inner_w * 9.0 / 16.0).clamp(120.0, max_vid_h)
+                        (inner_w * 9.0 / 16.0).clamp(min_vid_h, max_vid_h)
                     }
                 } else {
-                    (inner_w * 9.0 / 16.0).clamp(120.0, max_vid_h)
+                    (inner_w * 9.0 / 16.0).clamp(min_vid_h, max_vid_h)
                 };
                 video_rect = rect_f(pad_x, vt, pad_x + inner_w, vt + vid_h);
                 let wt = video_rect.bottom + 6.0;
@@ -1069,7 +1179,7 @@ impl PreviewWindow {
             } else if let Some(ref wf_data) = wf {
                 let count = wf_data.peaks.len();
                 let bar_step = (inner_w / 140.0).clamp(2.2, 3.6);
-                let num_bars = ((inner_w / bar_step).floor() as usize).clamp(24, count);
+                let num_bars = ((inner_w / bar_step).floor() as usize).clamp(1, count.max(1));
                 let actual_step = inner_w / num_bars as f32;
                 let bar_w = (actual_step - 1.0).clamp(1.2, 2.5);
                 let play_x = inner_l + ratio * inner_w;
@@ -1144,7 +1254,7 @@ impl PreviewWindow {
                     let tip_str = format_time(hr as f64 * dur, dur);
                     let tip_w = 46.0f32;
                     let tip_h = 16.0f32;
-                    let tx = (hx - tip_w * 0.5).clamp(wr.left + 4.0, wr.right - tip_w - 4.0);
+                    let tx_lo = wr.left + 4.0; let tx_hi = (wr.right - tip_w - 4.0).max(tx_lo); let tx = (hx - tip_w * 0.5).clamp(tx_lo, tx_hi);
                     let ty = wr.top + 4.0;
                     let tip_rc = rect_f(tx, ty, tx + tip_w, ty + tip_h);
                     brush.SetColor(&theme.tip_bg);
@@ -1499,7 +1609,7 @@ impl PreviewWindow {
     }
 
     fn should_capture_space(&self) -> bool {
-        if self.hwnd.0.is_null() {
+        if !self.attached || self.hwnd.0.is_null() || self.parent_hwnd.0.is_null() {
             return false;
         }
         let fg = unsafe { GetForegroundWindow() };
@@ -1519,12 +1629,11 @@ impl PreviewWindow {
         if unsafe { GetGUIThreadInfo(fg_tid, &mut gti) }.is_err() {
             return false;
         }
-        let focus = gti.hwndFocus;
-        if focus.0.is_null() {
+        if !gti.hwndCaret.0.is_null() {
             return false;
         }
-        // When our own window has focus, WM_KEYDOWN handles Space directly
-        if focus == self.hwnd {
+        let focus = gti.hwndFocus;
+        if focus.0.is_null() || focus == self.hwnd {
             return false;
         }
 
@@ -1630,6 +1739,24 @@ impl PreviewWindow {
             WM_HOTKEY => {
                 if wparam.0 as i32 == HOTKEY_SPACE_ID {
                     self.toggle_play();
+                }
+                return Some(LRESULT(0));
+            }
+
+            WM_APP_MEDIA_LOADED => {
+                let loaded = self.loaded_slot.lock().ok().and_then(|mut g| g.take());
+                if let Some((epoch, res)) = loaded {
+                    if epoch == self.active_gen && self.attached {
+                        match res {
+                            Ok(input) => self.load_media(input),
+                            Err(e) => {
+                                log_msg(&format!("Media load failed: {e}"));
+                                self.error_msg = Some("无法读取该媒体文件".to_string());
+                            }
+                        }
+                        self.recompute_layout();
+                        self.invalidate();
+                    }
                 }
                 return Some(LRESULT(0));
             }
@@ -1918,6 +2045,316 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         if let Some(res) = win.handle_message(msg, wparam, lparam) {
             return res;
         }
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+fn read_media_input(
+    path: &str,
+    file_name: String,
+    ext: String,
+    kind: MediaKind,
+) -> Result<MediaInput, String> {
+    let meta = fs::metadata(path).map_err(|e| format!("metadata failed for {path}: {e}"))?;
+    let file_size = meta.len();
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+
+    let max_mem = if kind == MediaKind::Audio {
+        MAX_AUDIO_MEM_BYTES
+    } else {
+        MAX_VIDEO_MEM_BYTES
+    };
+    let mem_data = if file_size <= max_mem {
+        fs::read(path).ok().map(Arc::new)
+    } else {
+        None
+    };
+
+    Ok(MediaInput {
+        file_path: Some(path.to_string()),
+        file_name,
+        ext,
+        file_size,
+        mtime_ns,
+        mem_data,
+        kind,
+    })
+}
+
+enum UiCmd {
+    AttachAndPreview {
+        epoch: u64,
+        parent: usize,
+        rect: RECT,
+        file_path: String,
+    },
+    ReparentOrResize {
+        epoch: u64,
+        parent: usize,
+        rect: RECT,
+    },
+    Resize {
+        epoch: u64,
+        rect: RECT,
+    },
+    Focus {
+        epoch: u64,
+    },
+    Detach {
+        epoch: u64,
+    },
+}
+
+struct ParkingState {
+    preview: Box<PreviewWindow>,
+    queue: Arc<Mutex<VecDeque<UiCmd>>>,
+    latest_gen: Arc<AtomicU64>,
+}
+
+pub struct PreviewUiHost {
+    parking_hwnd: usize,
+    preview_hwnd: usize,
+    queue: Arc<Mutex<VecDeque<UiCmd>>>,
+    latest_gen: Arc<AtomicU64>,
+}
+
+impl PreviewUiHost {
+    pub fn get() -> &'static Self {
+        static HOST: OnceLock<PreviewUiHost> = OnceLock::new();
+        HOST.get_or_init(Self::start)
+    }
+
+    fn start() -> Self {
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let latest_gen = Arc::new(AtomicU64::new(0));
+        let ready = Arc::new((Mutex::new(None::<(usize, usize)>), Condvar::new()));
+
+        let q_thread = queue.clone();
+        let g_thread = latest_gen.clone();
+        let r_thread = ready.clone();
+
+        let _ = std::thread::Builder::new()
+            .name("MediaPreviewPane-UI".to_string())
+            .spawn(move || {
+                ui_thread_main(q_thread, g_thread, r_thread);
+            });
+
+        let (lock, cvar) = &*ready;
+        let mut guard = lock.lock().unwrap();
+        let (parking_hwnd, preview_hwnd) = loop {
+            if let Some(pair) = *guard {
+                break pair;
+            }
+            guard = cvar.wait(guard).unwrap();
+        };
+
+        Self {
+            parking_hwnd,
+            preview_hwnd,
+            queue,
+            latest_gen,
+        }
+    }
+
+    pub fn preview_hwnd(&self) -> HWND {
+        HWND(self.preview_hwnd as *mut _)
+    }
+
+    fn post_cmd(&self, cmd: UiCmd) {
+        if let Ok(mut q) = self.queue.lock() {
+            q.push_back(cmd);
+        }
+        if self.parking_hwnd != 0 {
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(self.parking_hwnd as *mut _)),
+                    WM_APP_UI_CMD,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+    }
+
+    pub fn attach_and_preview(&self, parent: HWND, rect: RECT, file_path: String) -> u64 {
+        let epoch = self.latest_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.post_cmd(UiCmd::AttachAndPreview {
+            epoch,
+            parent: parent.0 as usize,
+            rect,
+            file_path,
+        });
+        epoch
+    }
+
+    pub fn reparent_or_resize(&self, epoch: u64, parent: HWND, rect: RECT) {
+        self.post_cmd(UiCmd::ReparentOrResize {
+            epoch,
+            parent: parent.0 as usize,
+            rect,
+        });
+    }
+
+    pub fn resize(&self, epoch: u64, rect: RECT) {
+        self.post_cmd(UiCmd::Resize { epoch, rect });
+    }
+
+    pub fn focus(&self, epoch: u64) {
+        self.post_cmd(UiCmd::Focus { epoch });
+    }
+
+    pub fn detach(&self, epoch: u64) {
+        let _ = self
+            .latest_gen
+            .compare_exchange(epoch, epoch + 1, Ordering::AcqRel, Ordering::Acquire);
+        self.post_cmd(UiCmd::Detach { epoch });
+    }
+}
+
+fn register_parking_class() -> PCWSTR {
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    let cls = w!("MediaPreviewPaneParkingWnd");
+    REGISTERED.get_or_init(|| unsafe {
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(parking_wnd_proc),
+            lpszClassName: cls,
+            ..Default::default()
+        };
+        let _ = RegisterClassW(&wc);
+    });
+    cls
+}
+
+fn ui_thread_main(
+    queue: Arc<Mutex<VecDeque<UiCmd>>>,
+    latest_gen: Arc<AtomicU64>,
+    ready: Arc<(Mutex<Option<(usize, usize)>>, Condvar)>,
+) {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+
+    let cls = register_parking_class();
+    let parking_hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            cls,
+            w!("MediaPreviewPaneParking"),
+            WS_POPUP,
+            -32000,
+            -32000,
+            100,
+            100,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+
+    let Ok(parking_hwnd) = parking_hwnd else {
+        log_msg("Failed to create parking window");
+        let (lock, cvar) = &*ready;
+        if let Ok(mut g) = lock.lock() {
+            *g = Some((0, 0));
+            cvar.notify_all();
+        }
+        unsafe { CoUninitialize(); }
+        return;
+    };
+
+    let preview = match PreviewWindow::create_parked(parking_hwnd) {
+        Ok(p) => p,
+        Err(e) => {
+            log_msg(&format!("Failed to create parked PreviewWindow: {e}"));
+            unsafe { let _ = DestroyWindow(parking_hwnd); }
+            let (lock, cvar) = &*ready;
+            if let Ok(mut g) = lock.lock() {
+                *g = Some((0, 0));
+                cvar.notify_all();
+            }
+            unsafe { CoUninitialize(); }
+            return;
+        }
+    };
+
+    let preview_hwnd = preview.hwnd().0 as usize;
+    let mut state = Box::new(ParkingState {
+        preview,
+        queue,
+        latest_gen,
+    });
+    let state_ptr = (&mut *state as *mut ParkingState) as isize;
+    unsafe {
+        SetWindowLongPtrW(parking_hwnd, GWLP_USERDATA_IDX, state_ptr);
+    }
+
+    {
+        let (lock, cvar) = &*ready;
+        if let Ok(mut g) = lock.lock() {
+            *g = Some((parking_hwnd.0 as usize, preview_hwnd));
+            cvar.notify_all();
+        }
+    }
+
+    let mut msg = MSG::default();
+    unsafe {
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        SetWindowLongPtrW(parking_hwnd, GWLP_USERDATA_IDX, 0);
+        state.preview.destroy_window();
+        let _ = DestroyWindow(parking_hwnd);
+        CoUninitialize();
+    }
+}
+
+unsafe extern "system" fn parking_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == WM_APP_UI_CMD {
+        let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA_IDX) } as *mut ParkingState;
+        if !ptr.is_null() {
+            let state = unsafe { &mut *ptr };
+            loop {
+                let cmd = state.queue.lock().ok().and_then(|mut q| q.pop_front());
+                let Some(cmd) = cmd else { break };
+                match cmd {
+                    UiCmd::AttachAndPreview { epoch, parent, rect, file_path } => {
+                        if epoch != state.latest_gen.load(Ordering::Acquire) {
+                            continue;
+                        }
+                        state.preview.attach_and_preview(
+                            epoch,
+                            HWND(parent as *mut _),
+                            rect,
+                            file_path,
+                        );
+                    }
+                    UiCmd::ReparentOrResize { epoch, parent, rect } => {
+                        state.preview.reparent_or_resize(epoch, HWND(parent as *mut _), rect);
+                    }
+                    UiCmd::Resize { epoch, rect } => {
+                        state.preview.resize_if_active(epoch, rect);
+                    }
+                    UiCmd::Focus { epoch } => {
+                        state.preview.focus_if_active(epoch);
+                    }
+                    UiCmd::Detach { epoch } => {
+                        state.preview.detach(epoch);
+                    }
+                }
+            }
+        }
+        return LRESULT(0);
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
